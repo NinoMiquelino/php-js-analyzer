@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload e Análise Assíncrona</title>
+    <meta name="author" content="Onivaldo Miquelino">          
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style> 
+        body { font-family: ui-sans-serif, system-ui; } 
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-6 flex justify-center">
+
+    <div class="w-full max-w-4xl bg-white p-8 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-center text-indigo-700 mb-8">Upload Assíncrono e Análise de Imagens</h1>
+        
+        <div class="mb-8 p-6 border-2 border-gray-200 rounded-lg">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Selecione as Imagens</h2>
+            <input type="file" id="fileInput" multiple accept="image/jpeg, image/png" 
+                   class="block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none p-2">
+            <button id="uploadBtn" class="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition" disabled>
+                Processar e Analisar Arquivos Selecionados
+            </button>
+        </div>
+
+        <h2 class="text-2xl font-semibold text-gray-800 border-b pb-2 mb-4">Status dos Processamentos</h2>
+        <div id="fileStatusContainer" class="space-y-4">
+            <p class="text-center text-gray-500">Nenhum arquivo selecionado.</p>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8001/src/api.php';         
+
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileStatusContainer = document.getElementById('fileStatusContainer');
+        
+        let filesToUpload = [];
+
+        // --- Gerenciamento de Estado no Frontend ---
+
+        // Atualiza a lista de arquivos quando novos são selecionados
+        fileInput.addEventListener('change', (e) => {
+            filesToUpload = Array.from(e.target.files);
+            renderInitialList();
+            uploadBtn.disabled = filesToUpload.length === 0;
+        });
+
+        // Renderiza a lista inicial de arquivos no container
+        function renderInitialList() {
+            if (filesToUpload.length === 0) {
+                 fileStatusContainer.innerHTML = '<p class="text-center text-gray-500">Nenhum arquivo selecionado.</p>';
+                 return;
+            }
+            
+            fileStatusContainer.innerHTML = filesToUpload.map((file, index) => `
+                <div id="file-${index}" class="p-4 border rounded-lg bg-white shadow-sm flex justify-between items-center transition">
+                    <div class="flex items-center space-x-4">
+                        <span class="text-xl text-gray-500">📄</span>
+                        <div>
+                            <p class="font-semibold text-gray-800">${file.name}</p>
+                            <p class="text-xs text-gray-500">${(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                            <div class="mt-1 flex space-x-2">
+                                <span class="status-badge text-xs font-medium px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800">Aguardando</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="w-32 h-32 thumb-display hidden border rounded-lg bg-gray-100 flex items-center justify-center">
+                        <img src="" alt="Thumbnail" class="max-w-full max-h-full object-cover rounded-lg">
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Atualiza o card de um arquivo específico
+        function updateFileStatus(index, status, message, data = null) {
+            const card = document.getElementById(`file-${index}`);
+            if (!card) return;
+            
+            const badge = card.querySelector('.status-badge');
+            
+            // Limpa classes de status
+            badge.classList.remove('bg-yellow-100', 'text-yellow-800', 'bg-blue-100', 'text-blue-800', 'bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800');
+            
+            // Define o novo status
+            if (status === 'PROCESSING') {
+                badge.textContent = 'Processando...';
+                badge.classList.add('bg-blue-100', 'text-blue-800');
+            } else if (status === 'SUCCESS') {
+                badge.textContent = 'Sucesso';
+                badge.classList.add('bg-green-100', 'text-green-800');
+                
+                // Exibe os metadados e o thumbnail
+                const thumbDisplay = card.querySelector('.thumb-display');
+                thumbDisplay.classList.remove('hidden');
+                thumbDisplay.querySelector('img').src = data.thumbnail_url;
+                
+                const details = `
+                    <p class="text-xs text-gray-700">Dimensões: ${data.dimensions}</p>
+                    <p class="text-xs text-gray-700">Tamanho: ${data.file_size_mb}</p>
+                    <a href="${data.original_url}" target="_blank" class="text-xs text-indigo-500 hover:underline">Ver Original</a>
+                `;
+                card.querySelector('.status-badge').parentElement.innerHTML += details;
+                
+            } else if (status === 'ERROR') {
+                badge.textContent = 'Falha';
+                badge.classList.add('bg-red-100', 'text-red-800');
+                card.querySelector('.status-badge').parentElement.innerHTML += `<p class="text-xs text-red-600 mt-1">${message}</p>`;
+            }
+        }
+
+        // --- Lógica de Upload Assíncrono (Processamento em Paralelo) ---
+
+        uploadBtn.addEventListener('click', async () => {
+            uploadBtn.disabled = true;
+            fileInput.disabled = true;
+
+            const uploadPromises = filesToUpload.map((file, index) => uploadSingleFile(file, index));
+            
+            // Usa Promise.allSettled para executar todos em paralelo e esperar que todos terminem,
+            // independentemente de sucesso ou falha.
+            await Promise.allSettled(uploadPromises); 
+
+            uploadBtn.disabled = false;
+            fileInput.disabled = false;
+        });
+
+        // Função para fazer o upload de um único arquivo
+        async function uploadSingleFile(file, index) {
+            updateFileStatus(index, 'PROCESSING', '');
+
+            const formData = new FormData();
+            formData.append('image_file', file); // Nome do campo deve ser 'image_file' conforme api.php
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: formData, // fetch lida com o cabeçalho 'multipart/form-data' automaticamente
+                });
+                
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    updateFileStatus(index, 'SUCCESS', 'Processado', result.data);
+                } else {
+                    const errorMessage = result.error || `Erro HTTP ${response.status}.`;
+                    updateFileStatus(index, 'ERROR', errorMessage);
+                }
+
+            } catch (error) {
+                updateFileStatus(index, 'ERROR', `Erro de Rede: ${error.message}`);
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+             fileStatusContainer.innerHTML = '<p class="text-center text-gray-500">Selecione arquivos e clique em Processar.</p>';
+        });
+    </script>
+</body>
+</html>
+   
